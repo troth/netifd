@@ -319,6 +319,14 @@ config_parse_wireless_interface(struct wireless_device *wdev, struct uci_section
 }
 
 static void
+config_parse_wireless_network(struct wireless_device *wdev, struct uci_section *s)
+{
+	blob_buf_init(&b, 0);
+	uci_to_blob(&b, s, wdev->drv->wnetwork.config);
+	wireless_network_create(wdev, b.head, s->e.name);
+}
+
+static void
 config_init_wireless(void)
 {
 	struct wireless_device *wdev;
@@ -368,6 +376,25 @@ config_init_wireless(void)
 
 	vlist_for_each_element(&wireless_devices, wdev, node)
 		vlist_flush(&wdev->interfaces);
+
+	uci_foreach_element(&uci_wireless->sections, e) {
+		struct uci_section *s = uci_to_section(e);
+
+		if (strcmp(s->type, "wifi-network") != 0)
+			continue;
+
+		dev_name = uci_lookup_option_string(uci_ctx, s, "device");
+		if (!dev_name)
+			continue;
+
+		wdev = vlist_find(&wireless_devices, dev_name, wdev, node);
+		if (!wdev) {
+			DPRINTF("[wnet] device %s not found!\n", dev_name);
+			continue;
+		}
+
+		config_parse_wireless_network(wdev, s);
+	}
 }
 
 void
