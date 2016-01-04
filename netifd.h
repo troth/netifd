@@ -59,6 +59,10 @@ enum {
 	DEBUG_WIRELESS	= 3,
 };
 
+#ifndef DEBUG
+#  define DEBUG 1
+#endif
+
 #ifdef DEBUG
 #define DPRINTF(format, ...) fprintf(stderr, "%s(%d): " format, __func__, __LINE__, ## __VA_ARGS__)
 #define D(level, format, ...) do { \

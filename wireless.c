@@ -48,6 +48,14 @@ static const struct uci_blob_param_list vif_param = {
 	.params = vif_policy,
 };
 
+static const struct blobmsg_policy wnet_policy =
+	{ .name = "disabled", .type = BLOBMSG_TYPE_BOOL };
+
+static const struct uci_blob_param_list wnet_param = {
+	.n_params = 1,
+	.params = &wnet_policy,
+};
+
 static void
 put_container(struct blob_buf *buf, struct blob_attr *attr, const char *name)
 {
@@ -96,6 +104,7 @@ static void
 prepare_config(struct wireless_device *wdev, struct blob_buf *buf, bool up)
 {
 	struct wireless_interface *vif;
+	struct wireless_network *wnet;
 	void *l, *i;
 
 	blob_buf_init(&b, 0);
@@ -110,6 +119,16 @@ prepare_config(struct wireless_device *wdev, struct blob_buf *buf, bool up)
 		put_container(&b, vif->config, "config");
 		if (vif->data)
 			blobmsg_add_blob(&b, vif->data);
+		blobmsg_close_table(&b, i);
+	}
+	blobmsg_close_table(&b, l);
+
+	l = blobmsg_open_table(&b, "wnetworks");
+	vlist_for_each_element(&wdev->wnetworks, wnet, node) {
+		i = blobmsg_open_table(&b, wnet->name);
+		put_container(&b, wnet->config, "config");
+		if (wnet->data)
+			blobmsg_add_blob(&b, wnet->data);
 		blobmsg_close_table(&b, i);
 	}
 	blobmsg_close_table(&b, l);
@@ -179,6 +198,7 @@ static void
 wireless_device_free_state(struct wireless_device *wdev)
 {
 	struct wireless_interface *vif;
+	struct wireless_network *wnet;
 
 	uloop_timeout_cancel(&wdev->script_check);
 	uloop_timeout_cancel(&wdev->timeout);
@@ -189,6 +209,10 @@ wireless_device_free_state(struct wireless_device *wdev)
 		free(vif->data);
 		vif->data = NULL;
 		vif->ifname = NULL;
+	}
+	vlist_for_each_element(&wdev->wnetworks, wnet, node) {
+		free(wnet->data);
+		wnet->data = NULL;
 	}
 }
 
@@ -281,6 +305,7 @@ static void
 wireless_device_free(struct wireless_device *wdev)
 {
 	vlist_flush_all(&wdev->interfaces);
+	vlist_flush_all(&wdev->wnetworks);
 	avl_delete(&wireless_devices.avl, &wdev->node.avl);
 	free(wdev->config);
 	free(wdev);
@@ -469,18 +494,20 @@ wireless_add_handler(const char *script, const char *name, json_object *obj)
 {
 	struct wireless_driver *drv;
 	char *name_str, *script_str;
-	json_object *dev_config_obj, *iface_config_obj;
-	struct uci_blob_param_list *dev_config, *iface_config;
+	json_object *dev_config_obj, *iface_config_obj, *wnet_config_obj;
+	struct uci_blob_param_list *dev_config, *iface_config, *wnet_config;
 
 	dev_config_obj = json_get_field(obj, "device", json_type_array);
 	iface_config_obj = json_get_field(obj, "iface", json_type_array);
+	wnet_config_obj = json_get_field(obj, "network", json_type_array);
 
-	if (!dev_config_obj || !iface_config_obj)
+	if (!dev_config_obj || !iface_config_obj || !wnet_config_obj)
 		return;
 
 	drv = calloc_a(sizeof(*drv),
 		&dev_config, sizeof(*dev_config) + sizeof(void *),
 		&iface_config, sizeof(*iface_config) + sizeof(void *),
+		&wnet_config, sizeof(*wnet_config) + sizeof(void *),
 		&name_str, strlen(name) + 1,
 		&script_str, strlen(script) + 1);
 
@@ -495,8 +522,13 @@ wireless_add_handler(const char *script, const char *name, json_object *obj)
 	iface_config->next[0] = &vif_param;
 	drv->interface.config = iface_config;
 
+	wnet_config->n_next = 1;
+	wnet_config->next[0] = &wnet_param;
+	drv->wnetwork.config = wnet_config;
+
 	drv->device.buf = netifd_handler_parse_config(drv->device.config, dev_config_obj);
 	drv->interface.buf = netifd_handler_parse_config(drv->interface.config, iface_config_obj);
+	drv->wnetwork.buf = netifd_handler_parse_config(drv->wnetwork.config, wnet_config_obj);
 
 	drv->node.key = drv->name;
 	avl_insert(&wireless_drivers, &drv->node);
@@ -563,6 +595,42 @@ vif_update(struct vlist_tree *tree, struct vlist_node *node_new,
 		D(WIRELESS, "Delete wireless interface %s on device %s\n", vif_old->name, wdev->name);
 		free(vif_old->config);
 		free(vif_old);
+	}
+
+	wdev_set_config_state(wdev, IFC_RELOAD);
+}
+
+static void
+wnet_update(struct vlist_tree *tree, struct vlist_node *node_new,
+	   struct vlist_node *node_old)
+{
+	struct wireless_network *wnet_old = container_of(node_old, struct wireless_network, node);
+	struct wireless_network *wnet_new = container_of(node_new, struct wireless_network, node);
+	struct wireless_device *wdev;
+
+	if (wnet_old)
+		wdev = wnet_old->wdev;
+	else
+		wdev = wnet_new->wdev;
+
+	if (wnet_old && wnet_new) {
+		wnet_old->section = wnet_new->section;
+		if (blob_attr_equal(wnet_old->config, wnet_new->config)) {
+			free(wnet_new);
+			return;
+		}
+		// TODO: Should network be "on interface" instead of device???
+		D(WIRELESS, "Update wireless network %s on device %s\n", wnet_new->name, wdev->name);
+		free(wnet_old->config);
+		wnet_old->config = blob_memdup(wnet_new->config);
+		free(wnet_new);
+	} else if (wnet_new) {
+		D(WIRELESS, "Create new wireless network %s on device %s\n", wnet_new->name, wdev->name);
+		wnet_new->config = blob_memdup(wnet_new->config);
+	} else if (wnet_old) {
+		D(WIRELESS, "Delete wireless network %s on device %s\n", wnet_old->name, wdev->name);
+		free(wnet_old->config);
+		free(wnet_old);
 	}
 
 	wdev_set_config_state(wdev, IFC_RELOAD);
@@ -641,6 +709,8 @@ wireless_device_create(struct wireless_driver *drv, const char *name, struct blo
 	INIT_LIST_HEAD(&wdev->script_proc);
 	vlist_init(&wdev->interfaces, avl_strcmp, vif_update);
 	wdev->interfaces.keep_old = true;
+	vlist_init(&wdev->wnetworks, avl_strcmp, wnet_update);
+	wdev->wnetworks.keep_old = true;
 
 	wdev->timeout.cb = wireless_device_setup_timeout;
 	wdev->script_task.cb = wireless_device_script_task_cb;
@@ -677,6 +747,26 @@ void wireless_interface_create(struct wireless_device *wdev, struct blob_attr *d
 	vif->config = data;
 	vif->section = section;
 	vlist_add(&wdev->interfaces, &vif->node, vif->name);
+}
+
+void wireless_network_create(struct wireless_device *wdev, struct blob_attr *data, const char *section)
+{
+	struct wireless_network *net;
+	char *name_buf;
+	char name[8];
+	struct blob_attr *disabled;
+
+	blobmsg_parse(&wnet_policy, 1, &disabled, blob_data(data), blob_len(data));
+
+	sprintf(name, "%d", wdev->net_idx++);
+
+	net = calloc_a(sizeof(*net), &name_buf, strlen(name) + 1);
+	net->name = strcpy(name_buf, name);
+	net->wdev = wdev;
+	net->config = data;
+	net->section = section;
+
+	vlist_add(&wdev->wnetworks, &net->node, net->name);
 }
 
 static void

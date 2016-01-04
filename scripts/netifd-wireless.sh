@@ -283,6 +283,10 @@ _wdev_common_iface_config() {
 	config_add_string mode ssid encryption 'key:wpakey'
 }
 
+_wdev_common_network_config() {
+	config_add_string iface ssid encryption 'key:wpakey'
+}
+
 init_wireless_driver() {
 	name="$1"; shift
 	cmd="$1"; shift
@@ -303,6 +307,11 @@ init_wireless_driver() {
 				json_add_array iface
 				_wdev_common_iface_config
 				eval "drv_$1_init_iface_config"
+				json_close_array
+
+				json_add_array network
+				_wdev_common_network_config
+				eval "drv_$1_init_network_config"
 				json_close_array
 
 				json_dump

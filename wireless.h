@@ -29,7 +29,7 @@ struct wireless_driver {
 	struct {
 		char *buf;
 		struct uci_blob_param_list *config;
-	} device, interface;
+	} device, interface, wnetwork;
 };
 
 struct wireless_device {
@@ -37,6 +37,7 @@ struct wireless_device {
 
 	struct wireless_driver *drv;
 	struct vlist_tree interfaces;
+	struct vlist_tree wnetworks;
 	char *name;
 
 	struct netifd_process script_task;
@@ -62,6 +63,7 @@ struct wireless_device {
 	int retry;
 
 	int vif_idx;
+	int net_idx;
 };
 
 struct wireless_interface {
@@ -76,6 +78,17 @@ struct wireless_interface {
 
 	const char *ifname;
 	struct blob_attr *network;
+};
+
+struct wireless_network {
+	struct vlist_node node;
+	const char *section;
+	char *name;
+
+	struct wireless_device *wdev;
+
+	struct blob_attr *config;
+	struct blob_attr *data;
 };
 
 struct wireless_process {
@@ -93,6 +106,7 @@ void wireless_device_set_down(struct wireless_device *wdev);
 void wireless_device_status(struct wireless_device *wdev, struct blob_buf *b);
 void wireless_device_get_validate(struct wireless_device *wdev, struct blob_buf *b);
 void wireless_interface_create(struct wireless_device *wdev, struct blob_attr *data, const char *section);
+void wireless_network_create(struct wireless_device *wdev, struct blob_attr *data, const char *section);
 int wireless_device_notify(struct wireless_device *wdev, struct blob_attr *data,
 			   struct ubus_request_data *req);
 
