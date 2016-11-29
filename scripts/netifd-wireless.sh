@@ -281,6 +281,8 @@ _wdev_common_device_config() {
 
 _wdev_common_iface_config() {
 	config_add_string mode ssid encryption 'key:wpakey'
+	config_add_string repeater_ap_access
+	config_add_array repeater_ap_acl
 }
 
 _wdev_common_network_config() {
